@@ -1,6 +1,39 @@
-using Interpolations: linear_interpolation
 import .ContinuumAbsorption: total_continuum_absorption
 using .RadiativeTransfer
+
+# Linear interpolation on the piecewise-uniform continuum wavelength grid. Every entry of
+# `wls.wl_ranges` is a uniform range, so a lookup is one index computation. This replaces
+# Interpolations.linear_interpolation in the synthesis hot loop.
+struct UniformLinearInterp{R<:AbstractRange,Y<:AbstractVector}
+    ranges::Vector{R}
+    offsets::Vector{Int} # the index in vals just before each range's first value
+    vals::Y
+end
+
+function UniformLinearInterp(wls::Wavelengths, vals::AbstractVector)
+    offsets = Vector{Int}(undef, length(wls.wl_ranges))
+    o = 0
+    for (k, r) in enumerate(wls.wl_ranges)
+        offsets[k] = o
+        o += length(r)
+    end
+    UniformLinearInterp(wls.wl_ranges, offsets, vals)
+end
+
+function (itp::UniformLinearInterp)(λ::Real)
+    for (k, r) in enumerate(itp.ranges)
+        first(r) <= λ <= last(r) || continue
+        t = (λ - first(r)) / step(r)
+        # shortcut: clamp at the range edges instead of throwing like Interpolations did; all
+        # queries come from the cntm grid. Upgrade to a throw if an out-of-grid query appears.
+        i = clamp(floor(Int, t) + 1, 1, length(r) - 1)
+        j = itp.offsets[k] + i
+        return itp.vals[j] + (t - (i - 1)) * (itp.vals[j+1] - itp.vals[j])
+    end
+    throw(BoundsError(itp, λ))
+end
+
+(itp::UniformLinearInterp)(λs::AbstractVector) = [itp(λ) for λ in λs]
 
 """
     SynthesisResult
@@ -225,7 +258,7 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
 
         α_cntm_vals = reverse(total_continuum_absorption(eachfreq(cntm_wls), layer.temp, nₑ, n_dict,
                                                          partition_funcs))
-        α_cntm_layer = linear_interpolation(cntm_wls, α_cntm_vals)
+        α_cntm_layer = UniformLinearInterp(cntm_wls, α_cntm_vals)
         α_row = α_cntm_layer(wls)
 
         α_ref_val = if tau_scheme == "anchored"
