@@ -158,13 +158,16 @@ function radiative_transfer_core(μ_ind, layer_inds, n_inward_rays, path, dsdz, 
 
     # this is τref/αref * ds/dz
     integrand_factor = @. τ_ref[layer_inds] / α_ref[layer_inds] * dsdz
+    # the τ reference layers do not change across wavelengths; the per-λ getindex
+    # allocates a new layer-length vector for every λ
+    log_τ_ref_sub = log_τ_ref[layer_inds]
 
     for λ_ind in 1:size(α, 2)
         # using more views below was not faster when I tested it
         # α is access in a cache-unfriendly way here. Fixing that might speex things up.
         if τ_scheme == "anchored"
             compute_tau_anchored!(τ, view(α, layer_inds, λ_ind), integrand_factor,
-                                  log_τ_ref[layer_inds], integrand_buffer)
+                                  log_τ_ref_sub)
         elseif τ_scheme == "bezier"
             compute_tau_bezier!(τ, path, view(α, layer_inds, λ_ind))
         else
@@ -241,14 +244,15 @@ function calculate_rays(μ_surface_grid, spatial_coord, spherical)
     end
 end
 
-function compute_tau_anchored!(τ, α, integrand_factor, log_τ_ref, integrand_buffer)
-    for k in eachindex(integrand_factor) #I can't figure out how to write this as a fast one-liner
-        integrand_buffer[k] = α[k] * integrand_factor[k]
-    end
-    τ[1] = 0.0
-    for i in 2:length(log_τ_ref)
+function compute_tau_anchored!(τ, α, integrand_factor, log_τ_ref)
+    # one pass: carry α*factor instead of writing it to a buffer and reading it back
+    @inbounds τ[1] = 0.0
+    @inbounds prev = α[1] * integrand_factor[1]
+    @inbounds for i in 2:length(log_τ_ref)
+        cur = α[i] * integrand_factor[i]
         τ[i] = τ[i-1] +
-               0.5 * (integrand_buffer[i] + integrand_buffer[i-1]) * (log_τ_ref[i] - log_τ_ref[i-1])
+               0.5 * (cur + prev) * (log_τ_ref[i] - log_τ_ref[i-1])
+        prev = cur
     end
 end
 
