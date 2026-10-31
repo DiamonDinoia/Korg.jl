@@ -74,9 +74,6 @@ Keyword arguments:
 """
 function hydrogen_line_absorption!(αs, λs::Wavelengths, T, nₑ, nH_I, nHe_I, UH_I, ξ, window_size;
                                    stark_profiles=_hline_stark_profiles, use_MHD=true)
-    # it may make sense for this functionality to move into the Wavelengths type to some extent
-    νs = c_cgs ./ λs
-    dνdλ = c_cgs ./ λs .^ 2
     Hmass = get_mass(Korg.species"H")
 
     n_max = maximum(_hline_stark_profiles) do line
@@ -138,9 +135,21 @@ function hydrogen_line_absorption!(αs, λs::Wavelengths, T, nₑ, nH_I, nHe_I, 
 
         # Stehle+ 1999 Stark-broadened profiles
         ν₀ = c_cgs / (λ₀)
-        scaled_Δν = _zero2epsilon.(abs.(view(νs, lb:ub) .- ν₀) ./ F0)
-        dIdν = exp.(line.profile.(T, nₑ, log.(scaled_Δν)))
-        view(αs, lb:ub) .+= dIdν .* view(dνdλ, lb:ub) .* amplitude
+        wls = view(λs, lb:ub)
+        if T isa Float64 && nₑ isa Float64
+            # T and nₑ are constant in the broadcast, so collapse the profile's trilinear lookup
+            # into a 1D interpolation on its Δν knots, built once per line
+            kZ = line.profile.itp.knots[3]
+            itp1 = linear_interpolation(kZ, [line.profile(T, nₑ, z) for z in kZ];
+                                        extrapolation_bc=Flat())
+            view(αs, lb:ub) .+= ((λ) -> exp(itp1(log(_zero2epsilon(abs(c_cgs / λ - ν₀) / F0)))) *
+                                         (c_cgs / λ^2) * amplitude).(wls)
+        else # keep the original trilinear lookup for autodiff (Dual) inputs
+            view(αs, lb:ub) .+= ((λ) -> exp(line.profile(T, nₑ,
+                                                         log(_zero2epsilon(abs(c_cgs / λ - ν₀) /
+                                                                           F0)))) *
+                                         (c_cgs / λ^2) * amplitude).(wls)
+        end
     end
 
     # now do the Brackett series
