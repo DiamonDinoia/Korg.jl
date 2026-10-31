@@ -283,7 +283,13 @@ function synthesize(atm::ModelAtmosphere, linelist, A_X::AbstractVector{<:Real},
                                               number_densities)
     end
 
-    source_fn = blackbody.((l -> l.temp).(atm.layers), wls')
+    # precomputing the λ-dependent parts of the Planck function avoids a per-element pow() call
+    temps = (l -> l.temp).(atm.layers)
+    λs = collect(wls)
+    λ² = λs .* λs
+    planck_prefactor = (2 * hplanck_cgs * c_cgs^2) ./ (λ² .* λ² .* λs)
+    planck_exp_arg = (hplanck_cgs * c_cgs / kboltz_cgs) ./ λs
+    source_fn = planck_prefactor' ./ expm1.(planck_exp_arg' ./ temps)
     cntm = nothing
     if return_cntm
         cntm, _, _, _ = RadiativeTransfer.radiative_transfer(atm, α, source_fn, mu_values;
